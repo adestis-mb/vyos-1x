@@ -539,6 +539,7 @@
           </leafNode>
         </children>
       </tagNode>
+      #include <include/firewall/blacklisting.xml.i>
     </children>
   </node>
 </interfaceDefinition>
