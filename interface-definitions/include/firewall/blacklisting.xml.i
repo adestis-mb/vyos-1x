@@ -87,7 +87,7 @@
             <help>Common blacklisting settings</help>
           </properties>
           <children>
-            <tagNode name="generic-source">
+            <leafNode name="generic-source">
               <properties>
                 <help>Scheduled task</help>
                 <valueHelp>
@@ -96,7 +96,7 @@
                 </valueHelp>
                 <priority>999</priority>
               </properties>
-            </tagNode>
+            </leafNode>
             <node name="abuseipdb">
               <properties>
                 <help>AbuseIPDB source</help>
@@ -132,15 +132,15 @@
                 </constraint>
               </properties>
               <children>
-                #include <address-inet.xml.i>
-                <tagNode name="firewall-group">
+                #include <include/firewall/address-inet.xml.i>
+                <leafNode name="firewall-group">
                   <properties>
                     <help>Group name</help>
                     <constraint>
                       <regex>[a-zA-Z0-9][\w\-\.]*</regex>
                     </constraint>
                   </properties>
-                </tagNode>
+                </leafNode>
               </children>
             </tagNode>
           </children>
@@ -150,19 +150,19 @@
             <help>Destination</help>
           </properties>
           <children>
-            <tagNode name="file">
+            <leafNode name="file">
               <properties>
                 <help>file location</help>
               </properties>
-            </tagNode>
-            <tagNode name="firewall-group">
+            </leafNode>
+            <leafNode name="firewall-group">
               <properties>
                 <help>Group name</help>
                 <constraint>
                   <regex>[a-zA-Z0-9][\w\-\.]*</regex>
                 </constraint>
               </properties>
-            </tagNode>
+            </leafNode>
           </children>
         </node>
         <node name="events">
