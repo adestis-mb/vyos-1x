@@ -89,12 +89,13 @@
           <children>
             <leafNode name="generic-source">
               <properties>
-                <help>Scheduled task</help>
+                <help>A generic source which returns a list of IPs / prefixes.</help>
                 <valueHelp>
-                  <format>txt</format>
-                  <description>url</description>
+                  <format>url</format>
+                  <description>URL of the data source. Must return a list of IPs / prefixes.</description>
                 </valueHelp>
                 <priority>999</priority>
+                <multi/>
               </properties>
             </leafNode>
             <node name="abuseipdb">
@@ -115,6 +116,14 @@
                     <constraintErrorMessage>AbuseIPDB confidence level must be between 0 and 100</constraintErrorMessage>
                   </properties>
                 </leafNode>
+                <leafNode name="key">
+                  <properties>
+                    <help>API key for AbuseIPDB. Overrides the default key.</help>
+                    <constraint>
+                      <regex>([A-Za-z0-9]+)</regex>
+                    </constraint>
+                  </properties>
+                </leafNode>
               </children>
             </node>
           </children>
@@ -128,17 +137,34 @@
               <properties>
                 <help>Network name</help>
                 <constraint>
-                  <regex>[a-zA-Z0-9][\w\-\.]*</regex>
+                  #include <include/constraint/alpha-numeric-hyphen-underscore-dot.xml.i>
                 </constraint>
+                <constraintErrorMessage>Name of network can only contain alphanumeric letters, hyphen, underscores and dot</constraintErrorMessage>
               </properties>
               <children>
-                #include <include/firewall/address-inet.xml.i>
+                <leafNode name="network">
+                  <properties>
+                    <help>Network-group member</help>
+                    <valueHelp>
+                      <format>ipv4net</format>
+                      <description>IPv4 Subnet to match</description>
+                    </valueHelp>
+                    <constraint>
+                      <validator name="ipv4-prefix"/>
+                    </constraint>
+                    <multi/>
+                  </properties>
+                </leafNode>
                 <leafNode name="firewall-group">
                   <properties>
                     <help>Group name</help>
+                    <completionHelp>
+                      <path>firewall group network-group</path>
+                    </completionHelp>
                     <constraint>
-                      <regex>[a-zA-Z0-9][\w\-\.]*</regex>
+                      #include <include/constraint/alpha-numeric-hyphen-underscore-dot.xml.i>
                     </constraint>
+                    <constraintErrorMessage>Name of firewall group can only contain alphanumeric letters, hyphen, underscores and dot</constraintErrorMessage>
                   </properties>
                 </leafNode>
               </children>
@@ -159,8 +185,9 @@
               <properties>
                 <help>Group name</help>
                 <constraint>
-                  <regex>[a-zA-Z0-9][\w\-\.]*</regex>
+                  #include <include/constraint/alpha-numeric-hyphen-underscore-dot.xml.i>
                 </constraint>
+                <constraintErrorMessage>Name of firewall group can only contain alphanumeric letters, hyphen, underscores and dot</constraintErrorMessage>
               </properties>
             </leafNode>
           </children>
@@ -183,6 +210,7 @@
                     <leafNode name="arguments">
                       <properties>
                         <help>Script arguments</help>
+                        <multi/>
                       </properties>
                     </leafNode>
                   </children>
