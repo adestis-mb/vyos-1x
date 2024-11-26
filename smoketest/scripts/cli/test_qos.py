@@ -21,29 +21,47 @@ from json import loads
 from base_vyostest_shim import VyOSUnitTestSHIM
 
 from vyos.configsession import ConfigSessionError
-from vyos.ifconfig import Section
+from vyos.ifconfig import Section, Interface
+from vyos.qos import CAKE
 from vyos.utils.process import cmd
 
 base_path = ['qos']
 
-def get_tc_qdisc_json(interface) -> dict:
+def get_tc_qdisc_json(interface, all=False) -> dict:
     tmp = cmd(f'tc -detail -json qdisc show dev {interface}')
     tmp = loads(tmp)
+
+    if all:
+        return tmp
+
     return next(iter(tmp))
 
-def get_tc_filter_json(interface, direction) -> list:
-    if direction not in ['ingress', 'egress']:
+
+def get_tc_filter_json(interface, direction=None) -> list:
+    if direction not in ['ingress', 'egress', None]:
         raise ValueError()
-    tmp = cmd(f'tc -detail -json filter show dev {interface} {direction}')
+
+    cmd_stmt = f'tc -detail -json filter show dev {interface}'
+    if direction:
+        cmd_stmt += f' {direction}'
+
+    tmp = cmd(cmd_stmt)
     tmp = loads(tmp)
     return tmp
 
-def get_tc_filter_details(interface, direction) -> list:
+
+def get_tc_filter_details(interface, direction=None) -> list:
     # json doesn't contain all params, such as mtu
-    if direction not in ['ingress', 'egress']:
+    if direction not in ['ingress', 'egress', None]:
         raise ValueError()
-    tmp = cmd(f'tc -details filter show dev {interface} {direction}')
+
+    cmd_stmt = f'tc -details filter show dev {interface}'
+    if direction:
+        cmd_stmt += f' {direction}'
+
+    tmp = cmd(cmd_stmt)
     return tmp
+
 
 class TestQoS(VyOSUnitTestSHIM.TestCase):
     @classmethod
@@ -853,6 +871,295 @@ class TestQoS(VyOSUnitTestSHIM.TestCase):
         # inherit from non exist group, should commit success with warning
         self.cli_set(['qos', 'traffic-match-group', '3', 'match-group', 'unexpected'])
         self.cli_commit()
+
+    def test_17_cake_updates(self):
+        bandwidth = 1000000
+        rtt = 200
+        interface = self._interfaces[0]
+        policy_name = f'qos-policy-{interface}'
+
+        self.cli_set(base_path + ['interface', interface, 'egress', policy_name])
+        self.cli_set(
+            base_path + ['policy', 'cake', policy_name, 'bandwidth', str(bandwidth)]
+        )
+        self.cli_set(base_path + ['policy', 'cake', policy_name, 'rtt', str(rtt)])
+
+        # commit changes
+        self.cli_commit()
+
+        tmp = get_tc_qdisc_json(interface)
+
+        self.assertEqual('cake', tmp['kind'])
+        # TC store rates as a 32-bit unsigned integer in bps (Bytes per second)
+        self.assertEqual(int(bandwidth * 125), tmp['options']['bandwidth'])
+        # RTT internally is in us
+        self.assertEqual(int(rtt * 1000), tmp['options']['rtt'])
+        self.assertEqual('triple-isolate', tmp['options']['flowmode'])
+        self.assertFalse(tmp['options']['ingress'])
+        self.assertFalse(tmp['options']['nat'])
+        self.assertTrue(tmp['options']['raw'])
+
+        nat = True
+        for flow_isolation in [
+            'blind',
+            'src-host',
+            'dst-host',
+            'dual-dst-host',
+            'dual-src-host',
+            'triple-isolate',
+            'flow',
+            'host',
+        ]:
+            self.cli_set(
+                base_path
+                + ['policy', 'cake', policy_name, 'flow-isolation', flow_isolation]
+            )
+
+            if nat:
+                self.cli_set(
+                    base_path + ['policy', 'cake', policy_name, 'flow-isolation-nat']
+                )
+            else:
+                self.cli_delete(
+                    base_path + ['policy', 'cake', policy_name, 'flow-isolation-nat']
+                )
+
+            self.cli_commit()
+
+            tmp = get_tc_qdisc_json(interface)
+            self.assertEqual(
+                CAKE.flow_isolation_map.get(flow_isolation), tmp['options']['flowmode']
+            )
+
+            self.assertEqual(nat, tmp['options']['nat'])
+            nat = not nat
+
+    def test_20_round_robin_policy_default(self):
+        interface = self._interfaces[0]
+        policy_name = f'qos-policy-{interface}'
+
+        self.cli_set(base_path + ['interface', interface, 'egress', policy_name])
+        self.cli_set(
+            base_path
+            + ['policy', 'round-robin', policy_name, 'description', 'default policy']
+        )
+
+        # commit changes
+        self.cli_commit()
+
+        tmp = get_tc_qdisc_json(interface, all=True)
+
+        self.assertEqual(2, len(tmp))
+        self.assertEqual('drr', tmp[0]['kind'])
+        self.assertDictEqual({}, tmp[0]['options'])
+        self.assertEqual('sfq', tmp[1]['kind'])
+        self.assertDictEqual(
+            {
+                'limit': 127,
+                'quantum': 1514,
+                'depth': 127,
+                'flows': 128,
+                'divisor': 1024,
+            },
+            tmp[1]['options'],
+        )
+
+        tmp = get_tc_filter_json(interface)
+        self.assertEqual(3, len(tmp))
+
+        for rec in tmp:
+            self.assertEqual('u32', rec['kind'])
+            self.assertEqual(1, rec['pref'])
+            self.assertEqual('all', rec['protocol'])
+
+        self.assertDictEqual(
+            {
+                'fh': '800::800',
+                'order': 2048,
+                'key_ht': '800',
+                'bkt': '0',
+                'flowid': '1:1',
+                'not_in_hw': True,
+                'match': {'value': '0', 'mask': '0', 'offmask': '', 'off': 0},
+            },
+            tmp[2]['options'],
+        )
+
+    def test_21_shaper_hfsc(self):
+        interface = self._interfaces[0]
+        policy_name = f'qos-policy-{interface}'
+        ul = {
+            'm1': '100kbit',
+            'm2': '150kbit',
+            'd': '100',
+        }
+        ls = {'m2': '120kbit'}
+        rt = {
+            'm1': '110kbit',
+            'm2': '130kbit',
+            'd': '75',
+        }
+        self.cli_set(base_path + ['interface', interface, 'egress', policy_name])
+        self.cli_set(base_path + ['policy', 'shaper-hfsc', policy_name])
+
+        # Policy {policy_name} misses "default" class!
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'upperlimit']
+        )
+
+        # At least one m2 value needs to be set for class: {class_name}
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'upperlimit', 'm1', ul['m1']]
+        )
+        # {class_name} upperlimit m1 value is set, but no m2 was found!
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'upperlimit', 'm2', ul['m2']]
+        )
+        # {class_name} upperlimit m1 value is set, but no d was found!
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'upperlimit', 'd', ul['d']]
+        )
+        # Linkshare m2 needs to be defined to use upperlimit m2 for class: {class_name}
+        with self.assertRaises(ConfigSessionError):
+            self.cli_commit()
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'linkshare', 'm2', ls['m2']]
+        )
+        self.cli_commit()
+
+        # use raw because tc json is incorrect here
+        tmp = cmd(f'tc -details qdisc show dev {interface}')
+        for rec in tmp.split('\n'):
+            rec = rec.strip()
+            if 'root' in rec:
+                self.assertEqual(rec, 'qdisc hfsc 1: root refcnt 2 default 2')
+            else:
+                self.assertRegex(
+                    rec,
+                    r'qdisc sfq \S+: parent 1:2 limit 127p quantum 1514b depth 127 flows 128 divisor 1024 perturb 10sec',
+                )
+        # use raw because tc json is incorrect here
+        tmp = cmd(f'tc -details class show dev {interface}')
+        for rec in tmp.split('\n'):
+            rec = rec.strip().lower()
+            if 'root' in rec:
+                self.assertEqual(rec, 'class hfsc 1: root')
+            elif 'hfsc 1:1' in rec:
+                # m2 \S+bit is auto bandwidth
+                self.assertRegex(
+                    rec,
+                    r'class hfsc 1:1 parent 1: sc m1 0bit d 0us m2 \S+bit ul m1 0bit d 0us m2 \S+bit',
+                )
+            else:
+                self.assertRegex(
+                    rec,
+                    rf'class hfsc 1:2 parent 1:1 leaf \S+: ls m1 0bit d 0us m2 {ls["m2"]} ul m1 {ul["m1"]} d {ul["d"]}ms m2 {ul["m2"]}',
+                )
+
+        for key, val in rt.items():
+            self.cli_set(
+                base_path + ['policy', 'shaper-hfsc', policy_name, 'default', 'realtime', key, val]
+            )
+        self.cli_commit()
+
+        tmp = cmd(f'tc -details class show dev {interface}')
+        for rec in tmp.split('\n'):
+            rec = rec.strip().lower()
+            if 'hfsc 1:2' in rec:
+                self.assertTrue(
+                    f'rt m1 {rt["m1"]} d {rt["d"]}ms m2 {rt["m2"]} ls m1 0bit d 0us m2 {ls["m2"]} ul m1 {ul["m1"]} d {ul["d"]}ms m2 {ul["m2"]}'
+                    in rec
+                )
+
+        # add some class
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'class', '10', 'linkshare', 'm2', '300kbit']
+        )
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'class', '10', 'match', 'tst', 'ip', 'dscp', 'internet']
+        )
+
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'class', '30', 'realtime', 'm2', '250kbit']
+        )
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'class', '30', 'realtime', 'd', '77']
+        )
+        self.cli_set(
+            base_path + ['policy', 'shaper-hfsc', policy_name, 'class', '30', 'match', 'tst30', 'ip', 'dscp', 'critical']
+        )
+        self.cli_commit()
+
+        tmp = cmd(f'tc -details qdisc show dev {interface}')
+        self.assertEqual(4, len(tmp.split('\n')))
+
+        tmp = cmd(f'tc -details class show dev {interface}')
+        tmp = tmp.lower()
+
+        self.assertTrue(
+            f'rt m1 {rt["m1"]} d {rt["d"]}ms m2 {rt["m2"]} ls m1 0bit d 0us m2 {ls["m2"]} ul m1 {ul["m1"]} d {ul["d"]}ms m2 {ul["m2"]}'
+            in tmp
+        )
+        self.assertTrue(': ls m1 0bit d 0us m2 300kbit' in tmp)
+        self.assertTrue(': rt m1 0bit d 77ms m2 250kbit' in tmp)
+
+    def test_22_rate_control_default(self):
+        interface = self._interfaces[0]
+        policy_name = f'qos-policy-{interface}'
+        bandwidth = 5000
+
+        self.cli_set(base_path + ['interface', interface, 'egress', policy_name])
+        self.cli_set(base_path + ['policy', 'rate-control', policy_name])
+        with self.assertRaises(ConfigSessionError):
+            # Bandwidth not defined
+            self.cli_commit()
+
+        self.cli_set(base_path + ['policy', 'rate-control', policy_name, 'bandwidth', str(bandwidth)])
+        # commit changes
+        self.cli_commit()
+
+        tmp = get_tc_qdisc_json(interface)
+
+        self.assertEqual('tbf', tmp['kind'])
+        # TC store rates as a 32-bit unsigned integer in bps (Bytes per second)
+        self.assertEqual(int(bandwidth * 125), tmp['options']['rate'])
+
+    def test_23_policy_limiter_iif_filter(self):
+        policy_name = 'smoke_test'
+        base_policy_path = ['qos', 'policy', 'limiter', policy_name]
+
+        self.cli_set(['qos', 'interface', self._interfaces[0], 'ingress', policy_name])
+        self.cli_set(base_policy_path + ['class', '100', 'bandwidth', '20gbit'])
+        self.cli_set(base_policy_path + ['class', '100', 'burst', '3760k'])
+        self.cli_set(base_policy_path + ['class', '100', 'match', 'test', 'interface', self._interfaces[0]])
+        self.cli_set(base_policy_path + ['class', '100', 'priority', '20'])
+        self.cli_set(base_policy_path + ['default', 'bandwidth', '1gbit'])
+        self.cli_set(base_policy_path + ['default', 'burst', '125000000b'])
+        self.cli_commit()
+
+        iif = Interface(self._interfaces[0]).get_ifindex()
+        tc_filters = cmd(f'tc filter show dev {self._interfaces[0]} ingress')
+
+        # class 100
+        self.assertIn('filter parent ffff: protocol all pref 20 basic chain 0', tc_filters)
+        self.assertIn(f'meta(rt_iif eq {iif})', tc_filters)
+        self.assertIn('action order 1:  police 0x1 rate 20Gbit burst 3847500b mtu 2Kb action drop overhead 0b', tc_filters)
+        # default
+        self.assertIn('filter parent ffff: protocol all pref 255 basic chain 0', tc_filters)
+        self.assertIn('action order 1:  police 0x2 rate 1Gbit burst 125000000b mtu 2Kb action drop overhead 0b', tc_filters)
 
 
 if __name__ == '__main__':

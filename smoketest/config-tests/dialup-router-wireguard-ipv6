@@ -688,7 +688,7 @@ set system login user vyos authentication encrypted-password '$6$2Ta6TWHd/U$NmrX
 set system login user vyos authentication plaintext-password ''
 set system name-server '172.16.254.30'
 set system option ctrl-alt-delete 'ignore'
-set system option performance 'latency'
+set system option performance 'network-latency'
 set system option reboot-on-panic
 set system option startup-beep
 set system syslog global facility all level 'debug'
