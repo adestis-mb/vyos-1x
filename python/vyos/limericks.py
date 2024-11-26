@@ -18,18 +18,18 @@ import random
 limericks = [
 
 """
-A programmer who's name was Searle
-Once wrote a long program in Perl.
-Despite very few quirks
-No one got how it works,
-Not even the interpreter.
+A programmer whose name was Searle
+once wrote a long program in Perl.
+Despite very few quirks,
+no one got how it works.
+Not even the interpreter perl(1).
 """,
 
 """
 There was a young lady of Maine
-Who set up IPsec VPN.
+who set up IPsec VPN.
 Problems didn't arise
-'til other vendors' device
+till other vendors' device
 had to add she to that VPN.
 """,
 
@@ -45,7 +45,7 @@ to get the damn build scripts to work.
 A network admin from Hong Kong
 knew MPPE cipher's not strong.
 But he was behind NAT,
-so he put up we that,
+so he put up with that,
 sad network admin from Hong Kong.
 """,
 
@@ -55,6 +55,14 @@ greeted friends with a three-way handshake
 and refused to proceed
 if they didn't complete it,
 that standards-compliant guy Drake.
+""",
+
+"""
+A network admin from Nantucket
+used hierarchy token buckets.
+Bandwidth limits he set
+slowed down his net,
+users drove him away from Nantucket.
 """
 
 ]
